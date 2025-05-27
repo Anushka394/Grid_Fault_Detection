@@ -23,6 +23,6 @@ python main.py
 Files
 
 - `data/grid_data.csv`: Simulated sensor data
-- `main.py`: Main program
-- `detector.py`: Fault detection logic
-- `visualizer.py`: Plotting code
+- `src/main.py`: Main program
+- `src/detector.py`: Fault detection logic
+- `src/visualizer.py`: Plotting code

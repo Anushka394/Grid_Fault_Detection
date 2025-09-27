@@ -1,0 +1,24 @@
+{
+  "fault_duration_threshold": 2,
+  "fault_thresholds": {
+    "earth_fault": {
+      "max_voltage": 100,
+      "min_current": 10
+    },
+    "under_voltage": {
+      "max_voltage": 180
+    },
+    "over_current": {
+      "min_current": 15
+    },
+    "under_frequency": {
+      "min_freq": 49.0
+    },
+    "over_frequency": {
+      "max_freq": 51.0
+    },
+    "low_power_factor": {
+      "min_pf": 0.90
+    }
+  }
+}

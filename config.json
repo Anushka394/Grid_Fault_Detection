@@ -1,0 +1,78 @@
+{
+  "grid_sections": {
+    "Substation_A": {
+      "location": "North District",
+      "capacity_mw": 100,
+      "priority": "high"
+    },
+    "Substation_B": {
+      "location": "South District", 
+      "capacity_mw": 75,
+      "priority": "medium"
+    }
+  },
+  "fault_duration_threshold": 2,
+  "fault_thresholds": {
+    "earth_fault": {
+      "max_voltage": 100,
+      "min_current": 10,
+      "severity": "critical"
+    },
+    "under_voltage": {
+      "max_voltage": 180,
+      "severity": "warning"
+    },
+    "over_current": {
+      "min_current": 15,
+      "severity": "critical"
+    },
+    "under_frequency": {
+      "min_freq": 49.0,
+      "severity": "warning"
+    },
+    "over_frequency": {
+      "max_freq": 51.0,
+      "severity": "warning"
+    },
+    "low_power_factor": {
+      "min_pf": 0.90,
+      "severity": "info"
+    },
+    "voltage_sag": {
+      "min_voltage": 200,
+      "max_voltage": 210,
+      "severity": "warning"
+    },
+    "harmonics": {
+      "max_thd": 5.0,
+      "severity": "info"
+    }
+  },
+  "alert_settings": {
+    "email_alerts": {
+      "enabled": true,
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 587,
+      "sender_email": "grid.monitor@company.com",
+      "sender_password": "your_app_password",
+      "recipients": ["operator@company.com", "manager@company.com"]
+    },
+    "sms_alerts": {
+      "enabled": false,
+      "api_key": "your_sms_api_key",
+      "recipients": ["+1234567890"]
+    },
+    "alert_on_severity": ["critical", "warning"]
+  },
+  "data_settings": {
+    "retention_days": 365,
+    "backup_enabled": true,
+    "database_url": "sqlite:///grid_monitoring.db"
+  },
+  "dashboard_settings": {
+    "refresh_interval_seconds": 2,
+    "max_fault_display": 20,
+    "theme": "light",
+    "enable_predictions": true
+  }
+}

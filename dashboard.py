@@ -6,14 +6,13 @@ from detector import EnhancedFaultDetector
 from visualizer import EnhancedDataVisualizer
 from datetime import datetime, timedelta
 
-# Page configuration
+
 st.set_page_config(
     page_title="Smart Grid Monitoring", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
 st.markdown("""
 <style>
     .metric-card {

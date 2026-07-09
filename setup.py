@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Setup script for Smart Grid Monitoring System
-"""
+
 
 import os
 import sqlite3

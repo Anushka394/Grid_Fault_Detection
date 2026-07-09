@@ -4,7 +4,6 @@ import pandas as pd
 # Connect to database
 conn = sqlite3.connect('alerts.db')
 
-# Query 1: All alerts
 print("=" * 60)
 print("ALL ALERTS:")
 print("=" * 60)

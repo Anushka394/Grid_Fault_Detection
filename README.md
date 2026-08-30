@@ -1,62 +1,135 @@
-# Smart Grid Monitoring System
+# Smart Grid Fault Detection & Monitoring System
 
-A real-time smart grid fault detection and monitoring system with advanced analytics and alerting capabilities.
+A real-time smart grid monitoring dashboard that detects electrical faults, logs events, sends alerts, and now predicts potential faults before they occur using a trained ML model.
 
-## What is this project?
+---
 
-This system monitors electrical grid parameters (voltage, current, frequency, power factor) in real-time and automatically detects various types of electrical faults. It provides:
+## Features
 
-- **Real-time monitoring** of grid parameters
-- **Automatic fault detection** for 7+ types of electrical faults
-- **Predictive analytics** to forecast potential issues
-- **Email alerts** for critical faults
-- **Interactive dashboard** with multiple pages
-- **Historical data analysis** and reporting
+- **Real-time monitoring** of Voltage, Current, Frequency, and Power Factor
+- **Threshold-based fault detection** for 7+ fault types with configurable thresholds in `config.json`
+- **ML-based predictive warnings** — a trained LogisticRegression model flags fault-imminent conditions before they trigger, with calibrated probability scores (0–100 %)
+- **Automated fault logging** — every detected fault is stored in a SQLite database
+- **Email alerts** for critical and warning-severity faults
+- **Interactive Streamlit dashboard** — real-time parameter graphs, fault-history tables, and trend analysis
+
+---
 
 ## Fault Types Detected
 
-1. **Earth Fault** - Low voltage + high current (Critical)
-2. **Under-voltage** - Voltage below safe limits (Warning)
-3. **Overcurrent** - Current above safe limits (Critical)
-4. **Under/Over Frequency** - Frequency deviation (Warning)
-5. **Low Power Factor** - Poor power quality (Info)
-6. **Voltage Sag** - Temporary voltage reduction (Warning)
-7. **Harmonic Distortion** - Power quality issues (Info)
+| Fault | Condition | Severity |
+|---|---|---|
+| Earth Fault | Voltage < 100 V **and** Current > 10 A | Critical |
+| Under-voltage | Voltage < 180 V | Warning |
+| Overcurrent | Current > 15 A | Critical |
+| Under-frequency | Frequency < 49.0 Hz | Warning |
+| Over-frequency | Frequency > 51.0 Hz | Warning |
+| Low Power Factor | Power Factor < 0.90 | Info |
+| Voltage Sag | 200 V ≤ Voltage ≤ 210 V | Warning |
+| Harmonic Distortion | Estimated THD > 5 % | Info |
+
+---
+
+## Predictive Fault Detection
+
+The `predict_potential_faults()` method in `detector.py` uses a trained **LogisticRegression** model to estimate the probability that a fault will occur within the next N readings (default N = 5).
+
+### Features used by the model
+
+| Feature | Description |
+|---|---|
+| `voltage_slope` | Degree-1 polyfit slope of Voltage over last 5 readings |
+| `current_slope` | Degree-1 polyfit slope of Current over last 5 readings |
+| `freq_std` | Rolling std of Frequency over last 5 readings |
+| `pf_slope` | Degree-1 polyfit slope of Power Factor over last 5 readings |
+| `voltage_accel` | Change in `voltage_slope` vs. the previous window (2nd-order trend) |
+| `current_accel` | Change in `current_slope` vs. the previous window (2nd-order trend) |
+
+### What "fault-imminent" means
+
+Label = 1 for row *i* if **any** confirmed fault occurs within the next N rows after *i*. This means the model learns to warn in advance of the moment a threshold is breached, not just at the breach itself.
+
+### Validation approach
+
+The dataset is split **80 % train / 20 % test in time order** — no shuffling. Shuffling would leak future sensor readings into the training window, inflating metrics and making the model useless in production (it would have "seen the future"). Time-ordered splitting reflects how the model will actually be used: trained on past data, predicting on new data that arrives later.
+
+### Training the model
+
+```bash
+pip install scikit-learn joblib      # if not already installed
+python train_predictor.py            # trains on grid_data.csv, saves predictor_model.pkl
+```
+
+Optional arguments:
+```bash
+python train_predictor.py --csv my_data.csv --horizon 10
+```
+
+The script prints Accuracy, Precision, Recall, F1, a confusion matrix, and the log-odds coefficients for each feature so you can see which signals matter most.
+
+### Fallback mode
+
+If `predictor_model.pkl` is not present (model not yet trained), `predict_potential_faults()` automatically falls back to the original heuristic formula and logs a clear `WARNING` — it never fails silently.
+
+---
 
 ## Quick Start
 
-1. **Setup** (one-time):
-   ```bash
-   python setup.py
-   ```
+**1. Install dependencies**
+```bash
+pip install -r requirements.txt
+```
 
-2. **Start data stream**:
-   ```bash
-   python producer.py
-   ```
+**2. One-time setup** (creates DB, directories, sample data)
+```bash
+python setup.py
+```
 
-3. **Launch dashboard** (new terminal):
-   ```bash
-   streamlit run dashboard.py
-   ```
+**3. Train the predictive model**
+```bash
+python train_predictor.py
+```
 
-4. **Access dashboard**: http://localhost:8501
+**4. Start the data stream** (terminal 1)
+```bash
+python producer.py
+```
 
-## System Components
+**5. Launch the dashboard** (terminal 2)
+```bash
+streamlit run dashboard.py
+```
 
-- `dashboard.py` - Multi-page monitoring interface
-- `detector.py` - Fault detection engine
-- `visualizer.py` - Data visualization
-- `alert_manager.py` - Email alerts & database logging
-- `producer.py` - Data stream simulator
-- `config.json` - System configuration
+**6. Open** http://localhost:8501
 
-## Use Cases
+---
 
-- Power grid monitoring
-- Electrical fault detection
-- Predictive maintenance
-- Power quality analysis
-- Grid operator dashboards
+## Project Structure
 
-Built with Python, Streamlit, and advanced analytics for professional grid monitoring applications.
+```
+Grid_Fault_Detection/
+├── dashboard.py          # Multi-page Streamlit monitoring interface
+├── detector.py           # Fault detection engine + predictive warnings
+├── visualizer.py         # Matplotlib / Seaborn plotting functions
+├── alert_manager.py      # Email alerts & SQLite fault logging
+├── producer.py           # CSV-based data stream simulator
+├── train_predictor.py    # ML model training script (LogisticRegression)
+├── predictor_model.pkl   # Serialised trained model (generated by train_predictor.py)
+├── grid_data.csv         # Historical grid readings (training + streaming source)
+├── config.json           # All thresholds, alert settings, dashboard config
+├── setup.py              # First-run setup (DB init, sample data, dep check)
+├── query_database.py     # CLI tool to query the alerts database
+└── requirements.txt      # Python dependencies
+```
+
+---
+
+## Configuration
+
+All fault thresholds and system settings live in `config.json` — no code changes needed to tune detection sensitivity. The predictive model thresholds are separate from the confirmed-fault thresholds; retraining `train_predictor.py` after updating `config.json` keeps them in sync automatically.
+
+---
+
+## Tech Stack
+
+Python · Streamlit · Pandas · NumPy · Matplotlib · Seaborn · SQLite · scikit-learn · joblib

@@ -1,8 +1,92 @@
+import logging
+import os
 import pandas as pd
 import json
 import numpy as np
 from datetime import datetime
 from alert_manager import AlertManager
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model cache — loaded once per process, never reloaded on every call
+# ---------------------------------------------------------------------------
+_PREDICTOR_MODEL = None          # sklearn Pipeline once loaded
+_PREDICTOR_LOAD_ATTEMPTED = False  # so we don't retry a missing file repeatedly
+_MODEL_PATH = os.path.join(os.path.dirname(__file__), "predictor_model.pkl")
+
+_PREDICT_FEATURES = [
+    "voltage_slope", "current_slope", "freq_std",
+    "pf_slope", "voltage_accel", "current_accel",
+]
+
+_WINDOW = 5   # trailing window — must match train_predictor.py
+
+
+def _load_predictor_model():
+    """
+    Load predictor_model.pkl once and cache it in the module-level variable.
+    Returns the Pipeline on success, None if the file doesn't exist.
+    Logs a clear WARNING in fallback mode so operators know it's uncalibrated.
+    """
+    global _PREDICTOR_MODEL, _PREDICTOR_LOAD_ATTEMPTED
+    if _PREDICTOR_LOAD_ATTEMPTED:
+        return _PREDICTOR_MODEL
+    _PREDICTOR_LOAD_ATTEMPTED = True
+
+    if not os.path.exists(_MODEL_PATH):
+        logger.warning(
+            "[PREDICTION] predictor_model.pkl not found at '%s'. "
+            "Running in FALLBACK / UNCALIBRATED mode — confidence scores are "
+            "heuristic estimates, not calibrated probabilities. "
+            "Run  python train_predictor.py  to train and save the model.",
+            _MODEL_PATH,
+        )
+        return None
+
+    try:
+        import joblib
+        _PREDICTOR_MODEL = joblib.load(_MODEL_PATH)
+        logger.info("[PREDICTION] Loaded predictor_model.pkl from '%s'.", _MODEL_PATH)
+    except Exception as exc:
+        logger.error(
+            "[PREDICTION] Failed to load predictor_model.pkl ('%s'): %s. "
+            "Falling back to heuristic mode.", _MODEL_PATH, exc
+        )
+        _PREDICTOR_MODEL = None
+
+    return _PREDICTOR_MODEL
+
+
+def _compute_prediction_features(recent_data: pd.DataFrame,
+                                   prev_v_slope: float | None,
+                                   prev_i_slope: float | None) -> dict:
+    """
+    Compute the six features used by the trained model from a 5-row window.
+    Also returns updated slope values for acceleration on the next call.
+    """
+    x = np.arange(_WINDOW, dtype=float)
+
+    v_slope = float(np.polyfit(x, recent_data["Voltage(V)"].values,  1)[0])
+    i_slope = float(np.polyfit(x, recent_data["Current(A)"].values,  1)[0])
+    f_std   = float(recent_data["Frequency(Hz)"].std(ddof=1))
+    pf_sl   = float(np.polyfit(x, recent_data["PowerFactor"].values, 1)[0])
+
+    v_accel = (v_slope - prev_v_slope) if prev_v_slope is not None else 0.0
+    i_accel = (i_slope - prev_i_slope) if prev_i_slope is not None else 0.0
+
+    return (
+        {
+            "voltage_slope":  v_slope,
+            "current_slope":  i_slope,
+            "freq_std":       f_std,
+            "pf_slope":       pf_sl,
+            "voltage_accel":  v_accel,
+            "current_accel":  i_accel,
+        },
+        v_slope,
+        i_slope,
+    )
 
 class EnhancedFaultDetector:
     def __init__(self, config_path='config.json'):
@@ -155,45 +239,123 @@ class EnhancedFaultDetector:
         return harmonics_faults
     
     def predict_potential_faults(self, data):
-        """Simple predictive analysis for potential faults"""
+        """
+        Predictive analysis for potential faults.
+
+        Model path: uses a trained LogisticRegression Pipeline serialised to
+        predictor_model.pkl (train with  python train_predictor.py).
+
+        If the model file is missing the method falls back to the original
+        heuristic formula and logs a WARNING so operators are never silently
+        running uncalibrated scores.
+
+        Return shape (unchanged): list of dicts with keys
+            'type', 'confidence', 'estimated_time', 'parameter'
+        where 'confidence' is 0-100.  In model mode it is predict_proba()
+        scaled to 0-100; in fallback mode it is the original heuristic value.
+        """
         predictions = []
-        
-        if len(data) < 5:
+
+        if len(data) < _WINDOW:
             return predictions
-        
-        # Analyze trends in last 5 readings
-        recent_data = data.tail(5)
-        
-        # Voltage trend analysis
-        voltage_trend = np.polyfit(range(len(recent_data)), recent_data['Voltage(V)'], 1)[0]
-        if voltage_trend < -2:  # Declining voltage
-            predictions.append({
-                'type': 'Potential Under-voltage',
-                'confidence': min(abs(voltage_trend) * 10, 95),
-                'estimated_time': '5-10 minutes',
-                'parameter': 'Voltage'
-            })
-        
-        # Current trend analysis
-        current_trend = np.polyfit(range(len(recent_data)), recent_data['Current(A)'], 1)[0]
-        if current_trend > 1:  # Rising current
-            predictions.append({
-                'type': 'Potential Overcurrent',
-                'confidence': min(current_trend * 15, 90),
-                'estimated_time': '3-8 minutes',
-                'parameter': 'Current'
-            })
-        
-        # Frequency stability analysis
-        freq_std = recent_data['Frequency(Hz)'].std()
-        if freq_std > 0.3:  # High frequency variation
-            predictions.append({
-                'type': 'Frequency Instability',
-                'confidence': min(freq_std * 100, 85),
-                'estimated_time': '2-5 minutes',
-                'parameter': 'Frequency'
-            })
-        
+
+        recent_data = data.tail(_WINDOW)
+
+        # ------------------------------------------------------------------
+        # Always compute the base feature values — needed by both the model
+        # path and the fallback heuristic path, and for parameter selection.
+        # ------------------------------------------------------------------
+        features, _, _ = _compute_prediction_features(recent_data, None, None)
+
+        voltage_slope = features["voltage_slope"]
+        current_slope = features["current_slope"]
+        freq_std      = features["freq_std"]
+
+        # ------------------------------------------------------------------
+        # Attempt to use the trained model
+        # ------------------------------------------------------------------
+        model = _load_predictor_model()
+
+        if model is not None:
+            # Build feature vector in the exact column order the model was trained on
+            feat_vec = np.array([[features[k] for k in _PREDICT_FEATURES]])
+            prob_fault = float(model.predict_proba(feat_vec)[0, 1])  # P(fault-imminent)
+            confidence = round(prob_fault * 100, 1)
+
+            # Decide which parameters to flag based on feature magnitudes,
+            # exactly mirroring the original parameter-selection logic —
+            # only the confidence number and the gate come from the model.
+            if confidence > 0:   # model says non-trivial probability
+                if voltage_slope < -2:
+                    predictions.append({
+                        'type': 'Potential Under-voltage',
+                        'confidence': confidence,
+                        'estimated_time': '5-10 minutes',
+                        'parameter': 'Voltage'
+                    })
+                if current_slope > 1:
+                    predictions.append({
+                        'type': 'Potential Overcurrent',
+                        'confidence': confidence,
+                        'estimated_time': '3-8 minutes',
+                        'parameter': 'Current'
+                    })
+                if freq_std > 0.3:
+                    predictions.append({
+                        'type': 'Frequency Instability',
+                        'confidence': confidence,
+                        'estimated_time': '2-5 minutes',
+                        'parameter': 'Frequency'
+                    })
+                # If the model flags high probability but no single feature
+                # exceeds a specific threshold, surface a generic warning so
+                # the prediction is never silently swallowed.
+                if not predictions and prob_fault >= 0.50:
+                    dominant = max(
+                        [("voltage_slope", abs(voltage_slope) * 10),
+                         ("current_slope", current_slope * 15),
+                         ("freq_std",      freq_std * 100)],
+                        key=lambda t: t[1]
+                    )
+                    param_map = {
+                        "voltage_slope": ("Potential Under-voltage", "Voltage", "5-10 minutes"),
+                        "current_slope": ("Potential Overcurrent",   "Current", "3-8 minutes"),
+                        "freq_std":      ("Frequency Instability",   "Frequency", "2-5 minutes"),
+                    }
+                    ptype, pparam, ptime = param_map[dominant[0]]
+                    predictions.append({
+                        'type': ptype,
+                        'confidence': confidence,
+                        'estimated_time': ptime,
+                        'parameter': pparam,
+                    })
+
+        else:
+            # ------------------------------------------------------------------
+            # FALLBACK: original heuristic formula (uncalibrated)
+            # ------------------------------------------------------------------
+            if voltage_slope < -2:
+                predictions.append({
+                    'type': 'Potential Under-voltage',
+                    'confidence': min(abs(voltage_slope) * 10, 95),
+                    'estimated_time': '5-10 minutes',
+                    'parameter': 'Voltage'
+                })
+            if current_slope > 1:
+                predictions.append({
+                    'type': 'Potential Overcurrent',
+                    'confidence': min(current_slope * 15, 90),
+                    'estimated_time': '3-8 minutes',
+                    'parameter': 'Current'
+                })
+            if freq_std > 0.3:
+                predictions.append({
+                    'type': 'Frequency Instability',
+                    'confidence': min(freq_std * 100, 85),
+                    'estimated_time': '2-5 minutes',
+                    'parameter': 'Frequency'
+                })
+
         return predictions
     
     def get_fault_statistics(self):

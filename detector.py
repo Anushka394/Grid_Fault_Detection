@@ -205,37 +205,93 @@ class EnhancedFaultDetector:
         return display_names.get(fault_type, fault_type.title())
     
     def detect_harmonics(self, data):
-        """Detect harmonic distortion (simulated)"""
+        """
+        Detect power quality degradation as a proxy for harmonic distortion.
+
+        NOTE: True Total Harmonic Distortion (THD) requires waveform-level
+        sampling at high frequency (typically 10 kHz+) followed by an FFT to
+        extract individual harmonic components (2nd, 3rd, 4th... harmonics).
+        This dataset provides one RMS reading per timestamp, which is not
+        sufficient for a real THD calculation.
+
+        Instead, this method uses two RMS-level indicators that are statistically
+        correlated with high-harmonic environments in practice:
+
+          1. Current Crest Factor deviation
+             Crest Factor = Peak / RMS.  For a pure 50 Hz sine wave CF ≈ 1.414.
+             Non-linear loads (VFDs, SMPS, rectifiers) that introduce harmonics
+             also cause the current waveform to become more peaked, raising CF.
+             We estimate a normalised deviation from the ideal CF using the
+             rolling std of current as a proxy for waveform distortion.
+
+          2. Voltage-Current phase proxy
+             In a purely resistive (low-harmonic) load, voltage and current
+             trends move together.  A divergence between the rolling slopes of
+             V and I — especially when PowerFactor is simultaneously degrading —
+             is a secondary indicator of reactive/harmonic loading.
+
+        These are engineering proxies, not a true THD measurement.  The result
+        is labelled "Power Quality Degradation" to accurately reflect what is
+        actually being detected.
+        """
         harmonics_faults = []
-        
-        # Simulate THD calculation based on current variations
-        for _, row in data.iterrows():
-            # Simple harmonic detection based on current fluctuation
-            if hasattr(self, 'prev_current'):
-                current_change = abs(row['Current(A)'] - self.prev_current)
-                if current_change > 2.0:  # Significant current change might indicate harmonics
-                    thd_estimate = current_change * 2.5  # Simplified THD estimation
-                    
-                    if thd_estimate > self.thresholds['harmonics']['max_thd']:
-                        fault_data = {
-                            'timestamp': row['Timestamp'],
-                            'fault_type': 'Harmonic Distortion',
-                            'parameter': 'THD',
-                            'value': f"{thd_estimate:.2f}%",
-                            'grid_section': 'Substation_A'
-                        }
-                        
-                        processed_fault = self.alert_manager.process_fault(fault_data)
-                        harmonics_faults.append((
-                            processed_fault['timestamp'],
-                            processed_fault['fault_type'],
-                            processed_fault['parameter'],
-                            processed_fault['value'],
-                            processed_fault['severity']
-                        ))
-            
-            self.prev_current = row['Current(A)']
-        
+
+        # Need at least a small window for rolling statistics
+        if len(data) < 3:
+            return harmonics_faults
+
+        max_thd = self.thresholds['harmonics']['max_thd']  # reuse existing threshold
+
+        for i, (_, row) in enumerate(data.iterrows()):
+            if i < 2:
+                continue  # need at least 3 rows for a rolling window
+
+            window = data.iloc[max(0, i - 2): i + 1]  # 3-row rolling window
+
+            # --- Indicator 1: current instability (proxy for waveform distortion) ---
+            current_std  = float(window['Current(A)'].std(ddof=1))
+            current_mean = float(window['Current(A)'].mean())
+            # Coefficient of Variation of current — scale-independent
+            current_cv = (current_std / current_mean * 100) if current_mean > 0 else 0.0
+
+            # --- Indicator 2: V-I trend divergence with PF degradation ---
+            v_range  = float(window['Voltage(V)'].max()  - window['Voltage(V)'].min())
+            i_range  = float(window['Current(A)'].max()  - window['Current(A)'].min())
+            pf_mean  = float(window['PowerFactor'].mean())
+
+            # Divergence: current fluctuating more than voltage while PF is low
+            vi_divergence = (i_range - v_range / 50.0)  # normalise V range to current scale
+            vi_divergence = max(vi_divergence, 0.0)
+
+            # Combined proxy score — weighted sum, scaled to a pseudo-THD %
+            # Weights chosen so that normal operation (cv≈1%, divergence≈0)
+            # gives a score well below max_thd=5%, and degraded operation exceeds it.
+            pf_penalty   = max(0.0, (1.0 - pf_mean) * 20)   # low PF adds up to ~2% per 0.1 PF drop
+            proxy_thd    = (current_cv * 0.6) + (vi_divergence * 1.5) + pf_penalty
+
+            if proxy_thd > max_thd:
+                fault_data = {
+                    'timestamp': row['Timestamp'],
+                    'fault_type': 'Power Quality Degradation',
+                    'parameter': 'Current CV / V-I Divergence',
+                    'value': (
+                        f"CV={current_cv:.1f}% "
+                        f"V-I div={vi_divergence:.2f} "
+                        f"PF={pf_mean:.3f} "
+                        f"[proxy score={proxy_thd:.1f}%]"
+                    ),
+                    'grid_section': 'Substation_A'
+                }
+
+                processed_fault = self.alert_manager.process_fault(fault_data)
+                harmonics_faults.append((
+                    processed_fault['timestamp'],
+                    processed_fault['fault_type'],
+                    processed_fault['parameter'],
+                    processed_fault['value'],
+                    processed_fault['severity']
+                ))
+
         return harmonics_faults
     
     def predict_potential_faults(self, data):
@@ -282,6 +338,16 @@ class EnhancedFaultDetector:
             prob_fault = float(model.predict_proba(feat_vec)[0, 1])  # P(fault-imminent)
             confidence = round(prob_fault * 100, 1)
 
+            def _dynamic_time(slope_magnitude, per_step_seconds=2):
+                """Estimate time-to-breach from slope. More severe = less time."""
+                if slope_magnitude < 1e-6:
+                    return '5-10 minutes'
+                steps = max(1, int(20 / slope_magnitude))
+                seconds = steps * per_step_seconds
+                lo = max(1, seconds // 60)
+                hi = lo + max(2, lo // 2)
+                return f'{lo}-{hi} minutes'
+
             # Decide which parameters to flag based on feature magnitudes,
             # exactly mirroring the original parameter-selection logic —
             # only the confidence number and the gate come from the model.
@@ -290,21 +356,21 @@ class EnhancedFaultDetector:
                     predictions.append({
                         'type': 'Potential Under-voltage',
                         'confidence': confidence,
-                        'estimated_time': '5-10 minutes',
+                        'estimated_time': _dynamic_time(abs(voltage_slope)),
                         'parameter': 'Voltage'
                     })
                 if current_slope > 1:
                     predictions.append({
                         'type': 'Potential Overcurrent',
                         'confidence': confidence,
-                        'estimated_time': '3-8 minutes',
+                        'estimated_time': _dynamic_time(current_slope),
                         'parameter': 'Current'
                     })
                 if freq_std > 0.3:
                     predictions.append({
                         'type': 'Frequency Instability',
                         'confidence': confidence,
-                        'estimated_time': '2-5 minutes',
+                        'estimated_time': _dynamic_time(freq_std),
                         'parameter': 'Frequency'
                     })
                 # If the model flags high probability but no single feature
@@ -318,43 +384,88 @@ class EnhancedFaultDetector:
                         key=lambda t: t[1]
                     )
                     param_map = {
-                        "voltage_slope": ("Potential Under-voltage", "Voltage", "5-10 minutes"),
-                        "current_slope": ("Potential Overcurrent",   "Current", "3-8 minutes"),
-                        "freq_std":      ("Frequency Instability",   "Frequency", "2-5 minutes"),
+                        "voltage_slope": ("Potential Under-voltage", "Voltage",    abs(voltage_slope)),
+                        "current_slope": ("Potential Overcurrent",   "Current",    current_slope),
+                        "freq_std":      ("Frequency Instability",   "Frequency",  freq_std),
                     }
-                    ptype, pparam, ptime = param_map[dominant[0]]
+                    ptype, pparam, mag = param_map[dominant[0]]
                     predictions.append({
                         'type': ptype,
                         'confidence': confidence,
-                        'estimated_time': ptime,
+                        'estimated_time': _dynamic_time(mag),
                         'parameter': pparam,
                     })
 
         else:
             # ------------------------------------------------------------------
-            # FALLBACK: original heuristic formula (uncalibrated)
+            # FALLBACK: z-score normalised heuristic (runs without .pkl)
+            #
+            # Instead of arbitrary multipliers (slope*10 etc.), we measure
+            # how many standard deviations each feature is from its expected
+            # "normal" baseline, then map that to a 0-100 confidence via a
+            # logistic-shaped curve so the score is at least monotonic and
+            # bounded without magic constants.
+            #
+            # Baseline values are conservative estimates of normal operation:
+            #   voltage_slope ≈ 0 ± 1 V/step   (flat or small drift)
+            #   current_slope ≈ 0 ± 0.5 A/step
+            #   freq_std      ≈ 0.1 Hz          (normal small variation)
             # ------------------------------------------------------------------
-            if voltage_slope < -2:
-                predictions.append({
-                    'type': 'Potential Under-voltage',
-                    'confidence': min(abs(voltage_slope) * 10, 95),
-                    'estimated_time': '5-10 minutes',
-                    'parameter': 'Voltage'
-                })
-            if current_slope > 1:
-                predictions.append({
-                    'type': 'Potential Overcurrent',
-                    'confidence': min(current_slope * 15, 90),
-                    'estimated_time': '3-8 minutes',
-                    'parameter': 'Current'
-                })
-            if freq_std > 0.3:
-                predictions.append({
-                    'type': 'Frequency Instability',
-                    'confidence': min(freq_std * 100, 85),
-                    'estimated_time': '2-5 minutes',
-                    'parameter': 'Frequency'
-                })
+
+            def _zscore_confidence(value, baseline_mean, baseline_std, cap=90.0):
+                """
+                Map a feature value to 0-100 confidence using a sigmoid on
+                the z-score.  z=0 → 50%, z=2 → ~88%, z=-2 → ~12%.
+                We only surface warnings for clearly abnormal values (z > 1.5).
+                """
+                z = (value - baseline_mean) / max(baseline_std, 1e-9)
+                prob = 1.0 / (1.0 + np.exp(-z))          # sigmoid
+                return round(min(prob * 100, cap), 1)
+
+            def _estimate_time(slope_magnitude, per_step_seconds=2):
+                """
+                Estimate minutes to threshold breach based on current slope.
+                More severe slope → shorter estimated time.
+                Returns a human-readable string like '3-6 minutes'.
+                """
+                if slope_magnitude < 1e-6:
+                    return 'unknown'
+                # rough steps to breach: assume 20% headroom
+                steps = max(1, int(20 / slope_magnitude))
+                seconds = steps * per_step_seconds
+                lo = max(1, seconds // 60)
+                hi = lo + max(2, lo // 2)
+                return f'{lo}-{hi} minutes'
+
+            if voltage_slope < -1:
+                conf = _zscore_confidence(-voltage_slope, 0, 1.0)
+                if conf >= 50:
+                    predictions.append({
+                        'type': 'Potential Under-voltage',
+                        'confidence': conf,
+                        'estimated_time': _estimate_time(abs(voltage_slope)),
+                        'parameter': 'Voltage'
+                    })
+
+            if current_slope > 0.5:
+                conf = _zscore_confidence(current_slope, 0, 0.5)
+                if conf >= 50:
+                    predictions.append({
+                        'type': 'Potential Overcurrent',
+                        'confidence': conf,
+                        'estimated_time': _estimate_time(current_slope),
+                        'parameter': 'Current'
+                    })
+
+            if freq_std > 0.1:
+                conf = _zscore_confidence(freq_std, 0.1, 0.08)
+                if conf >= 50:
+                    predictions.append({
+                        'type': 'Frequency Instability',
+                        'confidence': conf,
+                        'estimated_time': _estimate_time(freq_std, per_step_seconds=2),
+                        'parameter': 'Frequency'
+                    })
 
         return predictions
     

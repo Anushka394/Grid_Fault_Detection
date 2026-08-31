@@ -2,60 +2,49 @@ import pandas as pd
 import time
 import os
 
-SOURCE_FILE = 'grid_data.csv'
-LIVE_FILE = 'live_data.csv'
-DELAY_SECONDS = 2
+SOURCE_FILE = "grid_data.csv"
+LIVE_FILE   = "live_data.csv"
+DELAY       = 2  # seconds between rows
 
 print("Smart Grid Data Producer")
-print("=" * 40) 
+print("=" * 40)
+
 
 def produce_data():
-    """Reads from a source CSV and writes to a live CSV line by line."""
-    print("Starting data producer...")
-    
     if not os.path.exists(SOURCE_FILE):
-        print(f"Error: Source file '{SOURCE_FILE}' not found.")
-        print("Run 'python setup.py' to create sample data")
+        print(f"Error: '{SOURCE_FILE}' not found. Run setup.py to generate it.")
         return
-    
-    source_df = pd.read_csv(SOURCE_FILE)
-    
-    header = ",".join(source_df.columns) + '\n'
-    with open(LIVE_FILE, 'w') as f:
-        f.write(header)
-    print(f"Live data file '{LIVE_FILE}' created with header.")
+
+    source = pd.read_csv(SOURCE_FILE)
+
+    with open(LIVE_FILE, "w") as f:
+        f.write(",".join(source.columns) + "\n")
+    print(f"Created '{LIVE_FILE}' with header.")
+    print("Streaming data — press Ctrl+C to stop.\n")
 
     index = 0
-    print("Streaming data to monitoring system...")
-    print("Press Ctrl+C to stop")
-    
     while True:
-        row = source_df.iloc[[index]]
-        row_csv = row.to_csv(header=False, index=False)
-        
-        with open(LIVE_FILE, 'a') as f:
-            f.write(row_csv)
-            
-        timestamp = row.iloc[0]['Timestamp']
-        voltage = row.iloc[0]['Voltage(V)']
-        current = row.iloc[0]['Current(A)']
-        
-        # Status display
-        status = "NORMAL" if voltage > 200 and current < 12 else "WARNING" if voltage > 180 else "CRITICAL"
-        print(f"[{status}] T:{timestamp} | V:{voltage:.1f}V | I:{current:.1f}A | Data streamed")
-        
-        index = (index + 1) % len(source_df) 
-        time.sleep(DELAY_SECONDS)
+        row = source.iloc[[index]]
+        with open(LIVE_FILE, "a") as f:
+            f.write(row.to_csv(header=False, index=False))
+
+        v = row.iloc[0]["Voltage(V)"]
+        i = row.iloc[0]["Current(A)"]
+        t = row.iloc[0]["Timestamp"]
+        status = "NORMAL" if v > 200 and i < 12 else "WARNING" if v > 180 else "CRITICAL"
+        print(f"[{status}] T:{t} | V:{v:.1f}V | I:{i:.1f}A")
+
+        index = (index + 1) % len(source)
+        time.sleep(DELAY)
+
 
 if __name__ == "__main__":
     try:
         produce_data()
     except FileNotFoundError:
-        print(f"Error: Source file '{SOURCE_FILE}' not found.")
-        print("Run 'python setup.py' to create sample data")
+        print(f"Error: '{SOURCE_FILE}' not found. Run setup.py first.")
     except KeyboardInterrupt:
-        print("\nProducer stopped by user.")
+        print("\nProducer stopped.")
         if os.path.exists(LIVE_FILE):
             os.remove(LIVE_FILE)
-        print(f"Cleaned up '{LIVE_FILE}'.")
-        print("Data producer shutdown complete.")
+        print(f"Removed '{LIVE_FILE}'.")

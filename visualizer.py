@@ -10,67 +10,76 @@ class EnhancedDataVisualizer:
         self._setup_style()
 
     def _setup_style(self):
-        plt.style.use("default" if self.theme == "light" else "dark_background")
-        self.bg_color   = "white" if self.theme == "light" else "#2E2E2E"
-        self.text_color = "black" if self.theme == "light" else "white"
+        plt.style.use("dark_background")
+        self.bg_color   = "#161b27"
+        self.text_color = "#e0e0e0"
         sns.set_palette("husl")
 
     def plot_data(self, data, faults, thresholds, predictions=None):
         """Four-panel real-time parameter plot with fault markers and prediction overlays."""
-        fig, axs = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle("Smart Grid Parameters", fontsize=18, fontweight="bold")
+        fig, axs = plt.subplots(2, 2, figsize=(16, 10))
+        fig.patch.set_facecolor("#161b27")
+        fig.suptitle("Real-time Grid Parameters", fontsize=15, fontweight="bold",
+                     color="#e0e0e0", y=1.01)
 
-        severity_colors = {"critical": "#FF4444", "warning": "#FFA500", "info": "#4444FF"}
+        severity_colors = {"critical": "#ef5350", "warning": "#ffa726", "info": "#29b6f6"}
 
-        # Voltage
-        axs[0, 0].plot(data["Timestamp"], data["Voltage(V)"], color="#2E86AB", linewidth=2, label="Voltage (V)")
-        axs[0, 0].axhline(thresholds["under_voltage"]["max_voltage"],
-                          color="orange", ls="--", alpha=0.7, label="UV Threshold")
-        axs[0, 0].axhspan(thresholds["voltage_sag"]["min_voltage"],
-                          thresholds["voltage_sag"]["max_voltage"],
-                          alpha=0.2, color="yellow", label="Sag Range")
-        self._add_fault_markers(axs[0, 0], data, faults, "Voltage", severity_colors)
-        axs[0, 0].set_title("Voltage vs Time", fontsize=14, fontweight="bold")
-        axs[0, 0].set_ylabel("Voltage (V)")
-        axs[0, 0].grid(True, alpha=0.3)
-        axs[0, 0].legend()
+        panels = [
+            (axs[0, 0], "Voltage(V)",    "Voltage (V)",    "#42a5f5"),
+            (axs[0, 1], "Current(A)",    "Current (A)",    "#ab47bc"),
+            (axs[1, 0], "Frequency(Hz)", "Frequency (Hz)", "#ffa726"),
+            (axs[1, 1], "PowerFactor",   "Power Factor",   "#ef5350"),
+        ]
 
-        # Current
-        axs[0, 1].plot(data["Timestamp"], data["Current(A)"], color="#A23B72", linewidth=2, label="Current (A)")
-        axs[0, 1].axhline(thresholds["over_current"]["min_current"],
-                          color="red", ls="--", alpha=0.7, label="OC Threshold")
-        self._add_fault_markers(axs[0, 1], data, faults, "Current", severity_colors)
-        axs[0, 1].set_title("Current vs Time", fontsize=14, fontweight="bold")
-        axs[0, 1].set_ylabel("Current (A)")
-        axs[0, 1].grid(True, alpha=0.3)
-        axs[0, 1].legend()
+        threshold_lines = {
+            "Voltage(V)": [
+                (thresholds["under_voltage"]["max_voltage"], "#ffa726", "UV Limit"),
+            ],
+            "Current(A)": [
+                (thresholds["over_current"]["min_current"], "#ef5350", "OC Limit"),
+            ],
+            "Frequency(Hz)": [
+                (thresholds["under_frequency"]["min_freq"], "#ef5350", "UF Limit"),
+                (thresholds["over_frequency"]["max_freq"],  "#ef5350", "OF Limit"),
+            ],
+            "PowerFactor": [
+                (thresholds["low_power_factor"]["min_pf"], "#ef5350", "LPF Limit"),
+            ],
+        }
 
-        # Frequency
-        axs[1, 0].plot(data["Timestamp"], data["Frequency(Hz)"], color="#F18F01", linewidth=2, label="Frequency (Hz)")
-        axs[1, 0].axhline(thresholds["under_frequency"]["min_freq"],
-                          color="red", ls="--", alpha=0.7, label="UF Threshold")
-        axs[1, 0].axhline(thresholds["over_frequency"]["max_freq"],
-                          color="red", ls="--", alpha=0.7, label="OF Threshold")
-        self._add_fault_markers(axs[1, 0], data, faults, "Frequency", severity_colors)
-        axs[1, 0].set_title("Frequency vs Time", fontsize=14, fontweight="bold")
-        axs[1, 0].set_ylabel("Frequency (Hz)")
-        axs[1, 0].grid(True, alpha=0.3)
-        axs[1, 0].legend()
+        for ax, col, label, color in panels:
+            ax.set_facecolor("#1c2133")
+            ax.tick_params(colors="#8b9ab0", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#2a2f45")
 
-        # Power Factor
-        axs[1, 1].plot(data["Timestamp"], data["PowerFactor"], color="#C73E1D", linewidth=2, label="Power Factor")
-        axs[1, 1].axhline(thresholds["low_power_factor"]["min_pf"],
-                          color="red", ls="--", alpha=0.7, label="LPF Threshold")
-        self._add_fault_markers(axs[1, 1], data, faults, "Power Factor", severity_colors)
-        axs[1, 1].set_title("Power Factor vs Time", fontsize=14, fontweight="bold")
-        axs[1, 1].set_ylabel("Power Factor")
-        axs[1, 1].grid(True, alpha=0.3)
-        axs[1, 1].legend()
+            ax.plot(data["Timestamp"], data[col], color=color, linewidth=1.8,
+                    label=label, zorder=3)
+
+            for y_val, lc, lname in threshold_lines.get(col, []):
+                ax.axhline(y_val, color=lc, ls="--", alpha=0.6, linewidth=1, label=lname)
+
+            if col == "Voltage(V)" and "voltage_sag" in thresholds:
+                ax.axhspan(thresholds["voltage_sag"]["min_voltage"],
+                           thresholds["voltage_sag"]["max_voltage"],
+                           alpha=0.12, color="#ffd54f", label="Sag Zone")
+
+            self._add_fault_markers(ax, data, faults,
+                                    label.replace(" (V)", "").replace(" (A)", "")
+                                         .replace(" (Hz)", "").replace(" ", " "),
+                                    severity_colors)
+
+            ax.set_title(label, fontsize=11, fontweight="bold", color="#c9d1e0", pad=8)
+            ax.set_ylabel(label, fontsize=8, color="#8b9ab0")
+            ax.grid(True, alpha=0.15, color="#2a2f45", linestyle="--")
+            legend = ax.legend(fontsize=7, loc="upper right",
+                               facecolor="#1c2133", edgecolor="#2a2f45",
+                               labelcolor="#8b9ab0")
 
         if predictions:
             self._add_predictions(axs, predictions)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.tight_layout()
         return fig
 
     def _add_fault_markers(self, ax, data, faults, parameter, severity_colors):
@@ -103,12 +112,15 @@ class EnhancedDataVisualizer:
             ax = ax_map.get(pred["parameter"])
             if ax is None:
                 continue
+            c = pred["confidence"]
+            fc = "#3a1a1f" if c > 70 else "#2a2010" if c > 40 else "#1b3a2a"
+            tc = "#ef5350"  if c > 70 else "#ffa726" if c > 40 else "#66bb6a"
             ax.text(
-                0.02, 0.98,
-                f"WARN: {pred['type']}\nConfidence: {pred['confidence']:.1f}%",
+                0.02, 0.97,
+                f"WARN  {c:.0f}%\n{pred['type']}",
                 transform=ax.transAxes, verticalalignment="top",
-                bbox=dict(boxstyle="round", facecolor="yellow", alpha=0.7),
-                fontsize=9,
+                bbox=dict(boxstyle="round,pad=0.4", facecolor=fc, edgecolor=tc, alpha=0.9),
+                fontsize=8, color=tc, fontweight="bold",
             )
 
     def plot_severity_distribution(self, fault_data):
@@ -117,15 +129,22 @@ class EnhancedDataVisualizer:
             return None
         df = pd.DataFrame(fault_data)
         counts = df["severity"].value_counts()
-        fig, ax = plt.subplots(figsize=(8, 6))
+        fig, ax = plt.subplots(figsize=(6, 5))
+        fig.patch.set_facecolor("#161b27")
+        ax.set_facecolor("#161b27")
+        color_map = {"critical": "#ef5350", "warning": "#ffa726", "info": "#29b6f6"}
+        colors = [color_map.get(s, "#8b9ab0") for s in counts.index]
         wedges, texts, autotexts = ax.pie(
             counts.values, labels=counts.index, autopct="%1.1f%%",
-            colors=["#FF4444", "#FFA500", "#4444FF"], startangle=90,
+            colors=colors, startangle=90,
+            textprops={"color": "#c9d1e0", "fontsize": 10},
         )
         for at in autotexts:
-            at.set_color("white")
+            at.set_color("#0f1117")
             at.set_fontweight("bold")
-        ax.set_title("Fault Distribution by Severity", fontsize=14, fontweight="bold")
+            at.set_fontsize(9)
+        ax.set_title("Fault Distribution by Severity", fontsize=12,
+                     fontweight="bold", color="#e0e0e0", pad=12)
         plt.tight_layout()
         return fig
 
@@ -133,29 +152,35 @@ class EnhancedDataVisualizer:
         """Four-panel trend analysis with raw data, moving average, and linear trend line."""
         if len(data) < window:
             return None
-        fig, axs = plt.subplots(2, 2, figsize=(16, 10))
-        fig.suptitle("Trend Analysis with Moving Averages", fontsize=16, fontweight="bold")
+        fig, axs = plt.subplots(2, 2, figsize=(16, 9))
+        fig.patch.set_facecolor("#161b27")
+        fig.suptitle("Trend Analysis with Moving Averages", fontsize=14,
+                     fontweight="bold", color="#e0e0e0")
 
         params = [
-            ("Voltage(V)",    "Voltage (V)",    axs[0, 0]),
-            ("Current(A)",    "Current (A)",    axs[0, 1]),
-            ("Frequency(Hz)", "Frequency (Hz)", axs[1, 0]),
-            ("PowerFactor",   "Power Factor",   axs[1, 1]),
+            ("Voltage(V)",    "Voltage (V)",    axs[0, 0], "#42a5f5"),
+            ("Current(A)",    "Current (A)",    axs[0, 1], "#ab47bc"),
+            ("Frequency(Hz)", "Frequency (Hz)", axs[1, 0], "#ffa726"),
+            ("PowerFactor",   "Power Factor",   axs[1, 1], "#ef5350"),
         ]
-        for col, label, ax in params:
-            ax.plot(data["Timestamp"], data[col], alpha=0.5, label="Raw")
+        for col, label, ax, color in params:
+            ax.set_facecolor("#1c2133")
+            ax.tick_params(colors="#8b9ab0", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#2a2f45")
+            ax.plot(data["Timestamp"], data[col], alpha=0.35, color=color, label="Raw")
             ax.plot(data["Timestamp"], data[col].rolling(window=window).mean(),
-                    linewidth=2, label=f"{window}-pt MA")
+                    linewidth=2, color=color, label=f"{window}-pt MA")
             if len(data) > 1:
                 x = range(len(data))
                 z = np.polyfit(x, data[col], 1)
                 ax.plot(data["Timestamp"], np.poly1d(z)(x), "--",
-                        label=f"Trend (slope: {z[0]:.3f})")
-            ax.set_title(f"{label} Trend")
-            ax.grid(True, alpha=0.3)
-            ax.legend()
+                        color="#8b9ab0", linewidth=1, label=f"Trend ({z[0]:.3f})")
+            ax.set_title(f"{label} Trend", fontsize=10, fontweight="bold", color="#c9d1e0")
+            ax.grid(True, alpha=0.15, color="#2a2f45", linestyle="--")
+            ax.legend(fontsize=7, facecolor="#1c2133", edgecolor="#2a2f45", labelcolor="#8b9ab0")
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.tight_layout()
         return fig
 
     def plot_fault_heatmap(self, fault_data):

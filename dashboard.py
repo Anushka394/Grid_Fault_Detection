@@ -376,7 +376,7 @@ elif page == "Historical Data":
             }
             return colours.get(val, "")
 
-        styled = df.style.applymap(colour_severity, subset=["severity"])
+        styled = df.style.map(colour_severity, subset=["severity"])
         st.dataframe(styled, use_container_width=True)
     else:
         st.info("No records found.")

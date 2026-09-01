@@ -402,11 +402,33 @@ elif page == "System Settings":
     st.markdown('<div class="section-header">Alert Configuration</div>', unsafe_allow_html=True)
     a1, a2 = st.columns(2)
     with a1:
+        email_cfg = config["alert_settings"]["email_alerts"]
+        email_on  = email_cfg.get("enabled", False)
+        email_set = email_cfg.get("sender_password", "") not in ("", "your_app_password")
         st.markdown("**Email Alerts**")
-        st.json(config["alert_settings"]["email_alerts"])
+        st.markdown(
+            f'<span class="status-pill {"green" if email_on and email_set else "red"}">'
+            f'{"Configured & Enabled" if email_on and email_set else "Not Configured"}'
+            f'</span>', unsafe_allow_html=True
+        )
+        st.markdown(f"<div style='font-size:0.8rem;color:#8b9ab0;margin-top:8px;'>"
+                    f"SMTP: {email_cfg.get('smtp_server','—')}:{email_cfg.get('smtp_port','—')}<br>"
+                    f"Sender: {email_cfg.get('sender_email','—')}<br>"
+                    f"Recipients: {len(email_cfg.get('recipients', []))} configured"
+                    f"</div>", unsafe_allow_html=True)
     with a2:
+        sms_cfg = config["alert_settings"]["sms_alerts"]
+        sms_on  = sms_cfg.get("enabled", False)
+        sms_set = sms_cfg.get("api_key", "") not in ("", "your_sms_api_key")
         st.markdown("**SMS Alerts**")
-        st.json(config["alert_settings"]["sms_alerts"])
+        st.markdown(
+            f'<span class="status-pill {"green" if sms_on and sms_set else "red"}">'
+            f'{"Configured & Enabled" if sms_on and sms_set else "Not Configured"}'
+            f'</span>', unsafe_allow_html=True
+        )
+        st.markdown(f"<div style='font-size:0.8rem;color:#8b9ab0;margin-top:8px;'>"
+                    f"Recipients: {len(sms_cfg.get('recipients', []))} configured"
+                    f"</div>", unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown('<div class="section-header">System Information</div>', unsafe_allow_html=True)
